@@ -16,7 +16,7 @@ To do that, check lines 290-308.
 import glob
 import os
 import sys
-
+from math import sqrt
 try:
     sys.path.append(glob.glob('../carla/dist/carla-*%d.%d-%s.egg' % (
         sys.version_info.major,
@@ -32,7 +32,10 @@ import time
 import numpy as np
 global record_on
 record_on=0
-
+global no
+no=1
+global saved_rgb
+saved_rgb=[]
 try:
     import pygame
     from pygame.locals import K_ESCAPE
@@ -43,6 +46,7 @@ try:
     from pygame.locals import K_s
     from pygame.locals import K_w
     from pygame.locals import K_g
+    from pygame.locals import K_h
 except ImportError:
     raise RuntimeError('cannot import pygame, make sure pygame package is installed')
 def control(car):
@@ -50,7 +54,6 @@ def control(car):
     Applies control to main car based on pygame pressed keys.
     Will return True If ESCAPE is hit, otherwise False to end main loop.
     """
-    global record_on
     keys = pygame.key.get_pressed()
     if keys[K_ESCAPE]:
         return True
@@ -67,9 +70,6 @@ def control(car):
         control.steer = max(-1., min(control.steer - 0.05, 0))
     elif keys[K_d]:
         control.steer = min(1., max(control.steer + 0.05, 0))
-    elif keys[K_g]:
-        record_on+=1
-        record_on%=2
     else:
         control.steer = 0
     control.hand_brake = keys[K_SPACE]
@@ -229,10 +229,10 @@ class SensorManager:
         t_start = self.timer.time()
 
         image.convert(carla.ColorConverter.Raw)
-        #array = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
-        #array = np.reshape(array, (image.height, image.width, 4))
-        #array = array[:, :, :3]
-        #array = array[:, :, ::-1]
+        array = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
+        array = np.reshape(array, (image.height, image.width, 4))
+        array = array[:, :, :3]
+        array = array[:, :, ::-1]
 
         #if self.display_man.render_enabled():
         #    self.surface = pygame.surfarray.make_surface(array.swapaxes(0, 1))
@@ -240,12 +240,12 @@ class SensorManager:
         t_end = self.timer.time()
         self.time_processing += (t_end-t_start)
         self.tics_processing += 1
-        if self.tics_processing%5==0 and record_on==1:
-            image.save_to_disk('_out/left_camera/%08d' % image.frame)
+        if self.tics_processing%8==0 and record_on==1:
+            image.save_to_disk('_out/left_camera/%03d/%08d'%(no , image.frame))
     
     def save_rgb_image_mid(self, image):
         t_start = self.timer.time()
-
+        global saved_rgb
         image.convert(carla.ColorConverter.Raw)
         array = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
         array = np.reshape(array, (image.height, image.width, 4))
@@ -258,20 +258,27 @@ class SensorManager:
         t_end = self.timer.time()
         self.time_processing += (t_end-t_start)
         self.tics_processing += 1
-        if self.tics_processing%5==0 and record_on==1:
-            image.save_to_disk('_out/mid_camera/%08d' % image.frame)
+        if self.tics_processing%8==0 and record_on==1:
+            saved_rgb.append(image)
+            #image.save_to_disk('_out/mid_camera/%03d/%08d' %(no , image.frame))
 
     def save_rgb_image_right(self, image):
         t_start = self.timer.time()
+
         image.convert(carla.ColorConverter.Raw)
+        array = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
+        array = np.reshape(array, (image.height, image.width, 4))
+        array = array[:, :, :3]
+        array = array[:, :, ::-1]
+
         #if self.display_man.render_enabled():
         #    self.surface = pygame.surfarray.make_surface(array.swapaxes(0, 1))
 
         t_end = self.timer.time()
         self.time_processing += (t_end-t_start)
         self.tics_processing += 1
-        if self.tics_processing%5==0 and record_on==1:
-            image.save_to_disk('_out/right_camera/%08d' % image.frame)
+        if self.tics_processing%8==0 and record_on==1:
+            image.save_to_disk('_out/right_camera/%03d/%08d' %(no , image.frame))
 
     def save_lidar_image(self, image):
         t_start = self.timer.time()
@@ -298,8 +305,8 @@ class SensorManager:
         t_end = self.timer.time()
         self.time_processing += (t_end-t_start)
         self.tics_processing += 1
-        if self.tics_processing%5==0 and record_on==1:
-            image.save_to_disk('_out/lidar/%08d' % image.frame)
+        if self.tics_processing%8==0 and record_on==1:
+            image.save_to_disk('_out/lidar/%03d/%08d' %(no , image.frame))
 
     def save_semanticlidar_image(self, image):
         t_start = self.timer.time()
@@ -344,6 +351,49 @@ class SensorManager:
     def destroy(self):
         self.sensor.destroy()
 
+def normalized(vec):
+    norm=sqrt(vec.x**2+vec.y**2+vec.z**2)
+    vec.x=vec.x/norm
+    vec.y=vec.y/norm
+    vec.z=vec.z/norm
+    return vec
+
+def find_road(road_points,pos,acceleration):
+    if acceleration.x==0 and acceleration.y==0 and acceleration.z==0:
+        return "vehicle is stop"
+    for w in road_points:
+        w_pos=w.transform.location
+        if abs(w_pos.x-pos.x)<=1 and abs(w_pos.y-pos.y)<=1 and abs(w_pos.z-pos.z)<=1:
+            next_nodes=w.next(1)
+            if len(next_nodes)>=3:
+                next_node=next_nodes[2].transform.location
+            else:
+                next_node=next_nodes[0].transform.location
+            next_node.x-=w_pos.x
+            next_node.y-=w_pos.y
+            next_node.z-=w_pos.z
+            acceleration=normalized(acceleration)
+            cc=normalized(next_node)
+            # if same direction
+            if abs(acceleration.x-cc.x)<=0.2 and abs(acceleration.y-cc.y)<=0.2 and abs(acceleration.z-cc.z)<=0.2:
+                return w
+            if w.is_junction:
+                return "On junction"
+    return "c"
+
+def cal_junct(road_points,waypoint,pos):
+    ll=waypoint.next_until_lane_end(2)
+    last=ll[-1].transform.location
+    return last
+    #last_2=ll[len(ll)-2].transform.location
+    #last.x+=(last.x-last_2.x)*20
+    #last.y+=(last.y-last_2.y)*20
+    #last.z+=(last.z-last_2.z)*20
+    #for ww in road_points:
+    #    ww_pos=ww.transform.location
+    #    if abs(ww_pos.x-last.x)<=3 and abs(ww_pos.y-last.y)<=3 and abs(ww_pos.z-last.z)<=3 and ww.is_junction:
+    #        return ww_pos
+
 def run_simulation(args, client):
     """This function performed one test run using the args parameters
     and connecting to the carla client passed.
@@ -381,41 +431,94 @@ def run_simulation(args, client):
 
         # Then, SensorManager can be used to spawn RGBCamera, LiDARs and SemanticLiDARs as needed
         # and assign each of them to a grid position, 
-        #SensorManager(world, display_manager, 'RGBCameraleft', carla.Transform(carla.Location(x=0, z=2.4), carla.Rotation(yaw=-60)), 
-        #              vehicle, {}, display_pos=[0, 0])
+        # SensorManager(world, display_manager, 'RGBCameraleft', carla.Transform(carla.Location(x=0, z=2.4), carla.Rotation(yaw=-60)), 
+        #               vehicle, {}, display_pos=[0, 1])
         SensorManager(world, display_manager, 'RGBCameramid', carla.Transform(carla.Location(x=0, z=2.4), carla.Rotation(yaw=+00)), 
                       vehicle, {}, display_pos=[0, 0])
-        #SensorManager(world, display_manager, 'RGBCameraright', carla.Transform(carla.Location(x=0, z=2.4), carla.Rotation(yaw=+60)), 
-        #              vehicle, {}, display_pos=[0, 2])
+        # SensorManager(world, display_manager, 'RGBCameraright', carla.Transform(carla.Location(x=0, z=2.4), carla.Rotation(yaw=+60)), 
+        #               vehicle, {}, display_pos=[0, 2])
         #SensorManager(world, display_manager, 'RGBCamera', carla.Transform(carla.Location(x=0, z=2.4), carla.Rotation(yaw=180)), 
         #              vehicle, {}, display_pos=[1, 1])
 
-        SensorManager(world, display_manager, 'LiDAR', carla.Transform(carla.Location(x=0, z=2.4)), 
-                      vehicle, {'channels' : '64', 'range' : '100',  'points_per_second': '250000', 'rotation_frequency': '20'}, display_pos=[1, 0])
+        # SensorManager(world, display_manager, 'LiDAR', carla.Transform(carla.Location(x=0, z=2.4)), 
+        #               vehicle, {'channels' : '64', 'range' : '50',  'points_per_second': '100000', 'rotation_frequency': '20'}, display_pos=[1, 0])
         #SensorManager(world, display_manager, 'SemanticLiDAR', carla.Transform(carla.Location(x=0, z=2.4)), 
         #              vehicle, {'channels' : '64', 'range' : '100', 'points_per_second': '100000', 'rotation_frequency': '20'}, display_pos=[1, 2])
-
-
+        # state 0: find which road , 
+        # 1 : already find calculate junction distance 
+        # 2 : on junction, keeps find if find road not junction to state 0
+        state=0
         #Simulation loop
+        global record_on
+        global no
+        global saved_rgb
         call_exit = False
         time_init_sim = timer.time()
+        find_on=0
+        if find_on==1:
+            road_points = world.get_map().generate_waypoints(distance=4.0)
         while True:
             # Carla Tick
             if args.sync:
                 world.tick()
             else:
                 world.wait_for_tick()
+            if find_on==1:
+                position=vehicle.get_location()
+                acc=vehicle.get_acceleration()
+            #start=((acc.x==0) and (acc.y==0)and (acc.z==0))
+            if find_on==1:
+                if state ==0:
+                    this_w=find_road(road_points,position,acc)
+                    try:
+                        if this_w.is_junction:
+                            state=0
+                        else:
+                            state=1
+                            distance_last=1000
+                    except:
+                        pass
+                elif state ==1:
+                    try:
+                        ww_pos=cal_junct(road_points,this_w,position)
+                        distance=sqrt((ww_pos.x-position.x)**2+(ww_pos.y-position.y)**2+(ww_pos.z-position.z)**2)
+                        if distance>distance_last:
+                            state=0
+                        distance_last=distance
+                        #print("------------------------\n", end='\r')
+                        #print("Which lane: \n",this_w.lane_id, end='\r')
+                        print(distance, end='\r')
+                        #print("------------------------", end='\r')
+                        if distance<=5:
+                            state=0
+                    except:
+                        state=0
 
+            
             # Render received data
             display_manager.render()
             #print("current time : ",timer.time())
+            if find_on==1:
+                if this_w=="c":
+                    print("can not find road", end='\r')
             for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    call_exit = True
-                elif event.type == pygame.KEYDOWN:
-                    if event.key == K_ESCAPE or event.key == K_q:
-                        call_exit = True
-                        break
+                if event.type == pygame.KEYDOWN:
+                    if event.key==K_g:
+                        record_on+=1
+                        if record_on%2==0:
+                            record_on=0
+                            print("---------------")
+                            print("End recording!")
+                            print("Starting output!")
+                            print("---------------")
+                            for image in saved_rgb:
+                                image.save_to_disk('_out/mid_camera/%03d/%08d' %(no , image.frame))
+                            saved_rgb.clear()
+                            no+=1
+                        else:
+                            print("---------------")
+                            print("Start recording!")
+                            print("---------------")
             if control(vehicle):
                 return
             if call_exit:
@@ -458,8 +561,8 @@ def main():
     argparser.add_argument(
         '--res',
         metavar='WIDTHxHEIGHT',
-        default='640x360',
-        help='window resolution (default: 640x360)')
+        default='640x320',
+        help='window resolution (default: 640x320)')
 
     args = argparser.parse_args()
 
